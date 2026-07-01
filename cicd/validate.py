@@ -126,33 +126,29 @@ def check_configs(pack: Path, rep: Report) -> tuple[dict, dict]:
     exanet = _load_yaml(exanet_path, rep, "exanet.config.yaml") if exanet_path.exists() else {}
     exanet = exanet or {}
 
-    # memory backend + context
+    # Config CONTENT is ADVISORY (warns, never fails): configs are author-tweakable
+    # and legitimately vary between packs/exports. We still ensure the files EXIST and
+    # PARSE (handled above/in _load_yaml, which are ERRORs) — just not their values.
     mem = anet.get("memory") or {}
     backend = mem.get("backend")
     if backend is not None and backend not in MEMORY_BACKENDS:
-        rep.err(f"memory.backend '{backend}' invalid (expected one of {sorted(MEMORY_BACKENDS)})")
+        rep.warn(f"memory.backend '{backend}' not in {sorted(MEMORY_BACKENDS)}")
     if not anet.get("context"):
         rep.warn("no `context` block — the short-term rolling window will use code defaults")
 
-    # agents: model + provider + valid provider
     for name, cfg in (anet.get("agents") or {}).items():
         if not isinstance(cfg, dict):
-            rep.err(f"agent '{name}': config must be a mapping")
+            rep.warn(f"agent '{name}': config is not a mapping")
             continue
         if not cfg.get("model"):
-            rep.err(f"agent '{name}': missing `model`")
+            rep.warn(f"agent '{name}': no `model` set")
         prov = cfg.get("provider")
-        if not prov:
-            rep.err(f"agent '{name}': missing `provider`")
-        elif prov not in PROVIDERS:
-            rep.err(f"agent '{name}': provider '{prov}' not in {sorted(PROVIDERS)}")
+        if prov and prov not in PROVIDERS:
+            rep.warn(f"agent '{name}': provider '{prov}' not in {sorted(PROVIDERS)}")
 
     mgr = anet.get("manager") or {}
-    if mgr:
-        if not mgr.get("model"):
-            rep.err("manager: missing `model`")
-        if mgr.get("provider") and mgr["provider"] not in PROVIDERS:
-            rep.err(f"manager: provider '{mgr['provider']}' not in {sorted(PROVIDERS)}")
+    if mgr and mgr.get("provider") and mgr["provider"] not in PROVIDERS:
+        rep.warn(f"manager: provider '{mgr['provider']}' not in {sorted(PROVIDERS)}")
 
     return anet, exanet
 
@@ -197,12 +193,15 @@ def check_mcps(pack: Path, rep: Report, anet: dict, exanet: dict):
         cfg = _load_yaml(cfg_path, rep, f"mcps/{name}/config.yaml")
         if cfg is None:
             continue
+        # Config CONTENT is advisory (warns): missing `command` and machine-specific
+        # absolute paths are portability problems worth surfacing, but they don't fail
+        # the build (config is author-tweakable and varies between packs).
         if not cfg.get("command"):
-            rep.err(f"mcps/{name}/config.yaml: missing `command`")
+            rep.warn(f"mcps/{name}/config.yaml: no `command` (server won't start)")
         for s in _iter_strings(cfg):
             if ABS_PATH_RE.search(s):
-                rep.err(f"mcps/{name}/config.yaml: machine-specific absolute path '{s}' "
-                        f"(use a relative path / global binary / documented install)")
+                rep.warn(f"mcps/{name}/config.yaml: machine-specific absolute path '{s}' "
+                         f"(won't work on other machines — use a relative path / global binary)")
                 break
 
     # every mcp referenced by an agent must exist
