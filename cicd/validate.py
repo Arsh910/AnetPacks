@@ -294,14 +294,20 @@ def _forbidden_in_zip(rel: str) -> bool:
             or (base.endswith(".env") and base != ".env.example"))
 
 
-# PackSmith legitimately makes the zip differ from the source folder in two ways, so
-# we don't false-alarm on them:
+# PackSmith legitimately makes the zip differ from the source folder, so we don't
+# false-alarm on those:
 #   • it EMBEDS/regenerates a README.md into the pack  -> READMEs/LICENSE: not compared
-#   • declarative config is author-tweakable + goes stale between exports -> WARN, not fail
-# Everything else — .py tool code, mcps/*/config.yaml (which define the EXECUTED
-# command+args), prompts, skills, data — MUST be byte-identical: that's the
-# executable / instruction surface an attacker would actually target.
-_LENIENT_CONFIGS = {"anet.config.yaml", "exanet.config.yaml"}
+#   • all YAML config is author-tweakable + goes stale between exports -> WARN, not fail
+# Strict (byte-identical) comparison is kept for the CODE / instruction surface —
+# .py tool code, prompts, skills, data files.
+#
+# ⚠ SECURITY TRADEOFF: `config.yaml` here includes mcps/*/config.yaml, which defines
+# the `command`+`args` an MCP server EXECUTES. Relaxing it (chosen deliberately — MCP
+# configs go stale between exports) means a swapped MCP command in the zip is only a
+# WARNING, not a failure. The zip's command is still reviewable (it prints in the
+# report), and the folder config is still checked for machine-specific absolute paths.
+# To re-harden, remove "config.yaml" from this set so MCP configs compare strictly.
+_LENIENT_CONFIGS = {"anet.config.yaml", "exanet.config.yaml", "config.yaml"}
 
 
 def _zip_policy(rel: str) -> str:
@@ -309,7 +315,7 @@ def _zip_policy(rel: str) -> str:
     if base == "README.md" or base.upper().startswith("LICENSE"):
         return "doc"        # PackSmith embeds/regenerates a README; docs aren't code
     if base in _LENIENT_CONFIGS:
-        return "config"     # declarative — a content diff is a WARN (regenerate to sync)
+        return "config"     # declarative YAML — a content diff is a WARN (regenerate to sync)
     return "code"           # strict
 
 
@@ -322,8 +328,8 @@ def check_zip(zip_path: Path, pack_dir: Path, name: str, rep: Report):
     Direction matters: we require zip ⊆ folder (by content), NOT the reverse —
     PackSmith only ever STRIPS files (node_modules, .env, vendored MCP code), so
     folder-only files are expected. Per-file policy (see _zip_policy): docs are not
-    compared, anet/exanet config diffs are warnings, and everything else (code, MCP
-    configs that define executed commands, prompts, skills) is strict.
+    compared, YAML config diffs (incl. mcps/*/config.yaml) are warnings, and the code
+    surface (.py, prompts, skills, data) is strict.
     """
     try:
         zf = zipfile.ZipFile(zip_path)
