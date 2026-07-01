@@ -294,16 +294,36 @@ def _forbidden_in_zip(rel: str) -> bool:
             or (base.endswith(".env") and base != ".env.example"))
 
 
+# PackSmith legitimately makes the zip differ from the source folder in two ways, so
+# we don't false-alarm on them:
+#   • it EMBEDS/regenerates a README.md into the pack  -> READMEs/LICENSE: not compared
+#   • declarative config is author-tweakable + goes stale between exports -> WARN, not fail
+# Everything else — .py tool code, mcps/*/config.yaml (which define the EXECUTED
+# command+args), prompts, skills, data — MUST be byte-identical: that's the
+# executable / instruction surface an attacker would actually target.
+_LENIENT_CONFIGS = {"anet.config.yaml", "exanet.config.yaml"}
+
+
+def _zip_policy(rel: str) -> str:
+    base = rel.rsplit("/", 1)[-1]
+    if base == "README.md" or base.upper().startswith("LICENSE"):
+        return "doc"        # PackSmith embeds/regenerates a README; docs aren't code
+    if base in _LENIENT_CONFIGS:
+        return "config"     # declarative — a content diff is a WARN (regenerate to sync)
+    return "code"           # strict
+
+
 def check_zip(zip_path: Path, pack_dir: Path, name: str, rep: Report):
-    """THE supply-chain check: every file in the installable .zip must exist in the
-    reviewed pack folder with byte-identical content. Defends the attack where the
-    .zip (what PackSmith actually installs) carries code the reviewed folder does not
-    — benign code in <name>/<code>/, malicious code hidden in <name>.zip.
+    """THE supply-chain check: every EXECUTABLE / instruction file in the installable
+    .zip must exist in the reviewed folder byte-for-byte. Defends the attack where the
+    .zip (what PackSmith installs) carries code the reviewed folder does not — benign
+    code in <name>/<code>/, malicious code hidden in <name>.zip.
 
     Direction matters: we require zip ⊆ folder (by content), NOT the reverse —
-    PackSmith legitimately STRIPS things (node_modules, .env, vendored MCP code) from
-    the zip, so folder-only files are expected. A zip-only file, a differing file, or
-    a file PackSmith would never ship = tampering.
+    PackSmith only ever STRIPS files (node_modules, .env, vendored MCP code), so
+    folder-only files are expected. Per-file policy (see _zip_policy): docs are not
+    compared, anet/exanet config diffs are warnings, and everything else (code, MCP
+    configs that define executed commands, prompts, skills) is strict.
     """
     try:
         zf = zipfile.ZipFile(zip_path)
@@ -325,21 +345,33 @@ def check_zip(zip_path: Path, pack_dir: Path, name: str, rep: Report):
                 rep.err(f"{zip_path.name}: contains '{arc}' — PackSmith always strips this; "
                         f"the zip is not a genuine export (possible hand-tampering)")
                 continue
+            policy = _zip_policy(rel)
+            if policy == "doc":
+                continue                                   # README embedded / pure docs
             target = pack_dir / rel
             if not target.is_file():
-                rep.err(f"{zip_path.name}: '{rel}' is in the zip but NOT in the reviewed "
-                        f"folder {name}/ — installable code that can't be reviewed")
+                if policy == "config":
+                    rep.warn(f"{zip_path.name}: '{rel}' is in the zip but not the folder "
+                             f"(config — confirm it's intended)")
+                else:
+                    rep.err(f"{zip_path.name}: '{rel}' is in the zip but NOT in the reviewed "
+                            f"folder {name}/ — installable code that can't be reviewed")
                 continue
             try:
-                if _content_hash(zf.read(info)) != _content_hash(target.read_bytes()):
-                    rep.err(f"{zip_path.name}: '{rel}' DIFFERS from {name}/{rel} — the "
-                            f"installed file is not what was reviewed (possible tampering)")
-                else:
-                    matched += 1
+                same = _content_hash(zf.read(info)) == _content_hash(target.read_bytes())
             except Exception as exc:
                 rep.warn(f"{zip_path.name}: could not compare '{rel}' - {exc}")
+                continue
+            if same:
+                matched += 1
+            elif policy == "config":
+                rep.warn(f"{zip_path.name}: '{rel}' differs from {name}/{rel} — config out of "
+                         f"date? regenerate the zip with /packsmith share")
+            else:
+                rep.err(f"{zip_path.name}: '{rel}' DIFFERS from {name}/{rel} — the installed "
+                        f"file is not what was reviewed (possible tampering)")
         if not rep.errors:
-            rep.warn(f"zip verified: {matched} file(s) match the reviewed folder byte-for-byte")
+            rep.warn(f"zip verified: {matched} code file(s) match the reviewed folder byte-for-byte")
 
 
 def check_submission(submission: Path, rep: Report):
