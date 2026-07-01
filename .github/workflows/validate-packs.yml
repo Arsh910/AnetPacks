@@ -1,0 +1,46 @@
+name: validate-packs
+
+# Gates every pack submission: structure (<name>/<code> + README.md + <name>.zip),
+# zip integrity (the installable zip must match the reviewed folder byte-for-byte),
+# config schema, no committed secrets, no machine-specific absolute paths, and
+# tool/agent/MCP referential integrity. See cicd/validate.py.
+
+on:
+  pull_request:
+    paths: ["**"]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history so --changed can diff against origin/main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install pyyaml
+
+      - name: Validate all pack submissions
+        run: python cicd/validate.py --submission --scan .
+        # On a large repo, validate only the submissions changed in this PR instead:
+        # run: python cicd/validate.py --submission --scan . --changed
+
+  # Second line of defence: scan the whole diff for leaked secrets. `validate.py`
+  # already rejects committed .env values and secret-looking config strings; this
+  # catches anything, anywhere. Remove if you don't want the extra gate.
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

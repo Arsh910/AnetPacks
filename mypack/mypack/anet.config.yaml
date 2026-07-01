@@ -1,0 +1,151 @@
+# anet.config.yaml — optional model overrides for ANet
+#
+# Copy this file to anet.config.yaml and edit as needed.
+# Only specify what you want to change — everything else uses the built-in defaults.
+#
+# Supported providers:
+#   google      → Google AI / Gemini    requires: GOOGLE_API_KEY
+#   openrouter  → OpenRouter            requires: OPENROUTER_API_KEY
+#   openai      → OpenAI                requires: OPENAI_API_KEY
+#   anthropic   → Anthropic             requires: ANTHROPIC_API_KEY  (legacy alias: claude)
+#
+# Add keys to your .env file as needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Self-improving skills — written after complex tasks, injected before relevant ones
+skills:
+  enabled: true
+  skills_dir: skills/
+  creation_threshold: 6    # min tool calls before skill creation is considered
+  curator_min_skills: 5    # min skill files before Curator runs at startup
+  max_injected: 3          # max skills injected per agent task
+  stale_after_days: 30     # Curator archives agent-created skills unused this long
+  curator_interval_hours: 12  # Curator won't re-run more often than this
+
+# Context (short-term memory) — every turn the model sees a rolling summary of
+# older turns plus as many recent turns as fit a token budget. The summary updates
+# automatically when turns overflow the budget (one extra LLM call, only then).
+context:
+  enabled: true                # set false to disable the manual compress/forget prompt
+  recent_tokens: 3000          # tokens of recent turns kept verbatim before summarising
+  min_recent: 4                # always keep at least this many recent messages verbatim
+  threshold: 40                # message count that triggers the manual compress/forget prompt
+  keep: 20                     # recent messages kept by /forget and /compress
+
+# Memory — long-term, cross-session memory (local Chroma vector store + on-device
+# fastembed embeddings + your LLM). Stored under ~/.anet/memory/. Two backends:
+#   recmem (default) → native 3-tier recurrence memory (subconscious→episodic→
+#                      semantic); the LLM runs only when an interaction RECURS, so
+#                      most turns cost zero memory tokens. Data: ~/.anet/memory/recmem/.
+#   mem0             → mem0-backed flat store (LLM fact-extraction per pass).
+# The memory LLM defaults to the manager model; override just for memory below.
+memory:
+  backend: recmem                      # recmem | mem0  (switch takes effect on next start)
+  user_profile_enabled: true           # run a memory-extraction pass on session exit
+  nudge_enabled: true
+  nudge_interval: 10                   # turns between nudges to save useful facts (0 = off)
+  incremental_interval: 5              # turns between background memory extractions (0 = off)
+  # model: gemini-2.5-flash            # optional cheaper model just for memory (defaults to manager)
+  # provider: google
+
+  # RecMem tuning (backend: recmem). Consolidation fires when an incoming
+  # interaction finds >= recurrence_threshold similar snippets (cosine >=
+  # sim_threshold) already buffered; dedup_threshold skips near-identical facts.
+  recurrence_threshold: 2
+  sim_threshold: 0.72
+  dedup_threshold: 0.92
+
+  # What to extract, and how explicit saves are classified (LLM-driven, no tags).
+  # always_inject categories reach their applies_to agents every task; the rest are
+  # retrieved by relevance. Works identically on both backends.
+  instructions: >
+    Capture durable facts that help future sessions: the user's identity and standing
+    preferences, project locations and tech stacks, important decisions, environment
+    and setup details, and explicit instructions. Ignore small talk and transient chatter.
+  categories:
+    - {name: preference,  always_inject: true,  description: "A standing instruction or style to apply automatically — naming conventions, tone, output format, coding style, do/don't rules."}
+    - {name: identity,    always_inject: true,  description: "Who the user is: name, role, background, languages, interests, team."}
+    - {name: project,     always_inject: false, description: "Facts about a specific project: its path, stack, structure, key decisions."}
+    - {name: environment, always_inject: false, description: "Setup/tooling/config: OS, installed tools, where credentials live, important paths."}
+    - {name: fact,        always_inject: false, description: "Any other useful fact worth recalling that doesn't fit the above."}
+
+# Agent persona — loaded from SOUL.md and injected into manager prompts only
+persona:
+  soul_file: SOUL.md    # path relative to repo root
+  enabled: true         # set false to disable persona injection
+
+# Orchestration (AdaptOrch) — the sole engine. The decomposer breaks a request into
+# a subtask DAG; the router picks a topology (parallel / sequential / hierarchical /
+# hybrid) by the DAG's shape; executors run it; the synthesizer combines outputs with
+# the operator that fits the join — compose (distinct parts) / aggregate (findings) /
+# vote / rank / resolve (contradiction → arbiter). Per-stage models default to the
+# manager model — override a stage only to cut cost. All keys optional.
+# orchestration:
+#   # Per-stage models (each defaults to the manager model if omitted):
+#   decomposer: { model: nex-agi/nex-n2-pro:free,      provider: openrouter }  # Phase 1
+#   merger:     { model: anthropic/claude-sonnet-4.6,  provider: openrouter }  # Phase 5 — compose/aggregate/rank
+#   arbiter:    { model: anthropic/claude-sonnet-4.6,  provider: openrouter }  # Phase 5 — resolve conflicts
+#   # Router thresholds (paper-calibrated defaults; tune per pack):
+#   # theta_omega: 0.5   # min parallelism ratio to prefer the parallel topology
+#   # theta_gamma: 0.6   # coupling above this prefers hierarchical
+#   # theta_delta: 5     # min subtasks for hierarchical
+#   # theta_cs:    0.7   # consistency threshold — a signal INSIDE vote/resolve (not a global gate)
+
+# Manager (plans and coordinates all requests)
+# Default: gemini-2.5-pro via google
+manager:
+    model: anthropic/claude-sonnet-4.6
+    provider: openrouter
+
+# Per-agent overrides — model, provider, max_steps, extra_tools, and mcp can be set here.
+#
+# max_steps:   max tool-call iterations before the safety cap fires
+#              defaults — research_agent:10  computer_agent:20  checker_agent:8
+#                         code_agent:60
+# extra_tools: bolt ExTools (defined in exanet.config.yaml) onto a built-in agent
+# mcp:         connect MCP servers (defined in mcps/) to a built-in agent
+#
+# Vertex AI model IDs (provider: google):
+#   gemini-2.5-pro           ← latest stable Flash (recommended)
+#   gemini-2.5-pro -001      ← pinned stable version
+#   google/gemini-2.5-pro            ← latest stable Pro
+#   google/gemini-2.5-pro-001        ← pinned stable Pro
+#   google/gemini-2.0-flash-001      ← older stable (always available)
+#
+# Example:
+#   code_agent:
+#     model: gemini-2.5-pro 
+#     provider: google
+#     max_steps: 80
+#     extra_tools: [my_tool]      # ExTool from exanet.config.yaml
+#     mcp: [filesystem, github]   # MCP servers from mcps/
+agents:
+
+  research_agent:
+    model: openai/gpt-5.4-mini
+    provider: openrouter
+
+  computer_agent:
+    model: nex-agi/nex-n2-pro:free
+    provider: openrouter
+
+  checker_agent:
+    model: nex-agi/nex-n2-pro:free
+    provider: openrouter
+
+  code_agent:
+    model: anthropic/claude-haiku-4.5
+    provider: openrouter
+    mcp: [codegraph, playwright]   # playwright moved here (file_agent retired)
+    task_types:
+      - "codegraph mcp"
+      - "playwright mcp"
+
+
+# ── Provider / model reference ────────────────────────────────────────────────
+#
+# Google models:     gemini-2.5-pro  gemini-2.5-flash  gemini-2.0-flash
+# OpenAI models:     gpt-4o  gpt-4o-mini  o3-mini
+# Anthropic models:  claude-opus-4-7  claude-sonnet-4-6  claude-haiku-4-5-20251001
+# OpenRouter:        use full model ID e.g. anthropic/claude-sonnet-4-6
+#                    see https://openrouter.ai/models for full list
